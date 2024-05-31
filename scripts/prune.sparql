@@ -1,0 +1,108 @@
+PREFIX :      <file:///C:/Users/chiarcos/Desktop/corpus/revised-srl/ewt-conll/#> 
+PREFIX powla: <http://purl.org/powla/powla.owl#> 
+PREFIX conll: <http://ufal.mff.cuni.cz/conll2009-st/task-description.html#> 
+PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> 
+PREFIX terms: <http://purl.org/acoli/open-ie/> 
+PREFIX x:     <http://purl.org/acoli/conll-rdf/xml#> 
+PREFIX nif:   <http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#> 
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#> 
+
+# remove ignorable cols
+DELETE {
+	?a conll:_ ?b
+} WHERE {
+	?a conll:_ ?b
+};
+
+# drop merging artifacts
+DELETE {
+	?a ?rel "?"
+} WHERE {
+	?a a nif:Word; ?rel "?".
+	FILTER(?rel != conll:WORD)
+	FILTER(?rel != conll:LEMMA)
+	FILTER(?rel != conll:XPOS)
+	FILTER(strstarts(str(?rel),"http://ufal.mff.cuni.cz/conll2009-st/task-description.html#"))
+};
+
+# simplify IOBES SRL annotations
+DELETE {
+	?a ?rel ?b
+} INSERT {
+	?a ?new ?b
+} WHERE {
+	?a a nif:Word; ?rel ?b. ?b a nif:Word.
+	FILTER(contains(str(?rel),"-"))
+	BIND(uri(replace(str(?rel),"#[IOBES]-","#")) as ?new)
+};
+
+# infer UPOS from PTB XPOS and deps
+INSERT {
+	?w conll:UPOS ?upos
+} WHERE {
+	?w conll:XPOS ?pos.
+	MINUS { ?w conll:UPOS [] }
+	VALUES (?pos ?upos) {
+		("#" "X")
+		("$" "X")
+		("''" "PUNCT")
+		("," "PUNCT")
+		("-LRB-" "PUNCT")
+		("-RRB-" "PUNCT")
+		("." "PUNCT")
+		(":" "PUNCT")
+		("CC" "CCONJ")
+		("CD" "NUM")
+		("DT" "DET")
+		("EX" "ADV")
+		("FW" "X")
+		("JJ" "ADJ")
+		("JJR" "ADJ")
+		("JJS" "ADJ")
+		("MD" "AUX")
+		("NN" "NOUN")
+		("NNP" "PROPN")
+		("NNPS" "PROPN")
+		("NNS" "NOUN")
+		("PDT" "DET")
+		("POS" "PART")
+		("PRP" "PRON")
+		("PRP$" "PRON")
+		("RB" "ADV")
+		("RBR" "ADV")
+		("RBS" "ADV")
+		("RP" "PART")
+		("SYM" "SYM")
+		("UH" "INTJ")
+		("VB" "VERB")
+		("VBD" "VERB")
+		("VBG" "VERB")
+		("VBN" "VERB")
+		("VBP" "VERB")
+		("VBZ" "VERB")
+		("WDT" "PRON")
+		("WP" "PRON")
+		("WP$" "PRON")
+		("WRB" "ADV")
+		("``" "PUNCT")
+	}
+};
+
+INSERT {
+	?w conll:UPOS ?upos
+} WHERE {
+	?w conll:EDGE ?e.
+	MINUS { ?w conll:UPOS [] }
+	VALUES (?e ?upos) {
+		("mark" "SCONJ")
+		("case" "ADP")
+	}
+};
+
+INSERT {
+	?w conll:UPOS "PART"
+} WHERE {
+	?w conll:XPOS ?pos.
+	MINUS { ?w conll:UPOS [] }
+	FILTER(?pos in ("IN","TO"))
+};

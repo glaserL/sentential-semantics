@@ -1,0 +1,319 @@
+PREFIX powla: <http://purl.org/powla/powla.owl#>
+PREFIX conll: <http://ufal.mff.cuni.cz/conll2009-st/task-description.html#>
+PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX terms: <http://purl.org/acoli/open-ie/>
+PREFIX srl: <http://purl.org/acoli/open-ie/srl/>
+PREFIX tmp: <http://purl.org/acoli/open-ie/tmp/>
+PREFIX x:     <http://purl.org/acoli/conll-rdf/xml#>
+PREFIX nif:   <http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+
+# PMB processing, currently based on AMR workflow
+# verify annotations
+# create "regular" PB annotation from input with ID PMB_ID and PMB_DEPS
+
+##################
+# validate input #
+##################
+
+# for unaligned parts of multi-word expressions, copy PMB_DEPS annotations from a neighboring token if there is string overlap
+DELETE {
+	?x conll:PMB_DEPS "?"; conll:PMB_WORD "?".
+} INSERT {
+	?x conll:PMB_DEPS ?deps; conll:PMB_WORD ?pw; conll:MISC "<n:1".
+} WHERE {
+	?x conll:PMB_WORD "?"; conll:WORD ?w.
+	?x (^nif:nextWord|nif:nextWord) [ conll:WORD ?v; conll:PMB_WORD ?pw ; conll:PMB_DEPS ?deps ]
+	FILTER(contains(?pw,?w))
+	FILTER(contains(?pw,?v))
+	FILTER(contains(?deps,":"))
+};
+
+# remove PMB_DEPS if PMB_WORD doesn't contain WORD
+DELETE {
+	?w conll:PMB_DEPS ?deps
+} INSERT {
+	?w conll:MISC ?msg
+} WHERE {
+	?w conll:PMB_DEPS ?deps; conll:WORD ?w1; conll:PMB_WORD ?w2.
+	FILTER(!contains(?w2,?w1))
+	# BIND(concat("PMB_alignment_error:",?w1,"|",?w2) as ?msg)
+};
+
+###################
+# Apache-specific #
+###################
+PREFIX apf: <http://jena.apache.org/ARQ/property#>
+
+# note that SRL relations point predicate to argument, not the other way around!
+
+# transform PMB_DEPS, Apache-specific
+# for all enhanced props, also provide the generalization
+# see syntactic preprocessing below for analoguous treatment of HEAD+EDGE
+# for tmp:HEAD, see there
+DELETE {
+	?w conll:PMB_DEPS ?deps.
+} INSERT {
+	?h ?prop ?w.
+	?prop rdfs:subPropertyOf conll:PRED, srl:ROLE.
+	?w conll:MISC ?msg
+} WHERE {
+        ?w conll:PMB_DEPS ?deps.
+        ?dep apf:strSplit( ?deps "\\|" )
+
+				BIND(strbefore(?dep,":") as ?aid)
+				?h conll:PMB_ID ?aid.
+
+        BIND(replace(strafter(?dep,":"),".*\\.","") as ?role)
+				values (?role ?prop) {
+					# pseudo macro roles of prepositional predicates
+					("ARG1" conll:ARGM-ARG0)
+					("ARG2" conll:ARGM-ARG1)
+
+					# pseudo PB properties, after . (VerbNet)
+					# note: prepositional senses not mapped here will automatically show up as prepositional predicates
+					( "Attribute" conll:ARGM-ADJ)
+					( "Co-Agent" conll:ARGM-COM)
+					( "Co-Patient" conll:ARGM-COM)
+					( "Destination" conll:ARGM-DIR)
+					( "Source" conll:ARGM-DIR)
+					( "Extent" conll:ARGM-EXT)
+					( "Beneficiary" conll:ARGM-GOL)
+					( "Goal" conll:ARGM-GOL)
+					("Recipient" conll:ARGM-GOL)
+					("Result" conll:ARGM-GOL)
+					("Location" conll:ARGM-LOC)
+					("Material" conll:ARGM-MAT)
+					("Instrument" conll:ARGM-MNR)
+					("Agent" conll:ARGM-PAG)
+					("Experiencer" conll:ARGM-PAG)
+					("Pivot" conll:ARGM-PAG)
+					("Co-Theme" conll:ARGM-PPT)
+					("Theme" conll:ARGM-PPT)
+					("Topic" conll:ARGM-PPT)
+					("Stimulus" conll:ARGM-PPT)
+					("Patient" conll:ARGM-PPT)
+					("Product" conll:ARGM-PPT)
+					("Duration" conll:ARGM-TMP)
+					("Frequency" conll:ARGM-TMP)
+					("Value" conll:ARGM-VAL)
+					("Asset" conll:ARGM-VAL)
+
+					# pseudo PB properties, without .; todo: check direction
+					("Attribute" conll:ARGM-ADJ)
+					("AttributeOf" conll:ARGM-ADJ-of)
+					("Colour" conll:ARGM-ADJ)
+					("ColourOf" conll:ARGM-ADJ-of)
+					("Title" conll:ARGM-CXN) 		# unclear
+					("Instance" conll:ARGM-CXN)		# unclear
+					("Destination" conll:ARGM-DIR)
+					("Source" conll:ARGM-DIR)
+					("Path" conll:ARGM-DIR)
+					("Extent" conll:ARGM-EXT)
+					("Quantity" conll:ARGM-EXT)
+					("Beneficiary" conll:ARGM-GOL)
+					("Goal" conll:ARGM-GOL)
+					("Recipient" conll:ARGM-GOL)
+					("Result" conll:ARGM-GOL)
+					("Location" conll:ARGM-LOC)
+					("Context" conll:ARGM-LOC)
+					("MadeOf" conll:ARGM-MAT)
+					("Material" conll:ARGM-MAT)
+					("Manner" conll:ARGM-MNR)
+					("Degree" conll:ARGM-MNR)
+					("Agent" conll:ARGM-PAG)
+					("Causer" conll:ARGM-PAG)
+					("Consumer" conll:ARGM-PAG)
+					("Creator" conll:ARGM-PAG)
+					("Experiencer" conll:ARGM-PAG)
+					("Pivot" conll:ARGM-PAG)
+					("Participant" conll:ARGM-PPT)
+					("Patient" conll:ARGM-PPT)
+					("Product" conll:ARGM-PPT)
+					("Stimulus" conll:ARGM-PPT)
+					("Theme" conll:ARGM-PPT)
+					("Topic" conll:ARGM-PPT)
+					("Duration" conll:ARGM-TMP)
+					("Finish" conll:ARGM-TMP)
+					("Frequency" conll:ARGM-TMP)
+					("Start" conll:ARGM-TMP)
+					("Time" conll:ARGM-TMP)
+					("Value" conll:ARGM-VAL)
+					("Unit" conll:ARGM-VAL)
+					("Bearer" conll:ARGM-poss)
+					("Content" conll:ARGM-poss)
+					("ContentOf" conll:ARGM-poss-of)
+					("InstanceOf" conll:ARGM-poss)
+					("Of" conll:ARGM-poss)
+					("Owner" conll:ARGM-poss)
+					("Part" conll:ARGM-poss-of)
+					("PartOf" conll:ARGM-poss)
+					("SubOf" conll:ARGM-poss)
+					("User" conll:ARGM-poss)
+
+					# pseudo-relations to specialized processing
+					("Sub" tmp:Sub)
+
+					# unmapped: can (and shall not) be represented in SSRL right now
+					# conll:_ properties will be deleted later on
+					("Role" conll:_) # this conflates coreference and relational nouns, unresolvable
+
+					# unknown => to be resolved later on
+					# in Apache Jena, this overgenerates and binds against everything also bound before
+					(UNDEF conll:ARGM-CXN)
+				}
+
+				BIND(if(!strends(str(?prop),?role),
+							  concat(replace(str(?prop),".*#.*-([A-Z0-9]+|poss)(-of)?$","$1"),"<",?role),
+								?empty) as ?msg)
+};
+
+# if multiple properties apply, remove CXN
+DELETE {
+	?w conll:ARGM-CXN ?h.
+	?h conll:MISC ?msg.
+} WHERE {
+	?w conll:ARGM-CXN ?h.
+	?w ?prop ?h.
+	FILTER(?prop!=conll:ARGM-CXN)
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	OPTIONAL { ?h conll:MISC ?msg FILTER(contains(?msg,"CXN<")) }
+};
+
+###################################
+# revert direction of of-argument #
+###################################
+
+DELETE {
+	?src ?prop ?tgt.
+} INSERT {
+	?tgt ?inverse ?src. ?inverse rdfs:subPropertyOf srl:ROLE.
+} WHERE {
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	?src ?prop ?tgt.
+	FILTER(strends(str(?prop),"-of"))
+	BIND(URI(replace(str(?prop),"-of$","")) as ?inverse)
+};
+
+################
+# conjunctions #
+################
+# PMB coordinating conjunctions are the heads of their phrases, but in UD, they are dependents of a conjunct
+# form tmp:Sub, propagate (copy) relations to their parts
+
+INSERT {
+	?pred ?prop ?sub.
+} WHERE {
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	FILTER(?prop!=tmp:Sub)
+	?pred ?prop ?x.
+	?x tmp:Sub ?sub.
+};
+
+##############
+# expletives #
+##############
+# if expletives are annotated as predicates, transfer all SRL annotations to their head
+DELETE {
+	?ex ?prop ?arg.
+} INSERT {
+	?head ?prop ?arg.
+	?arg conll:MISC ?msg.
+} WHERE {
+	{ ?ex conll:XPOS "EX" } UNION { ?ex conll:HEAD "expl" }
+	?ex ?prop ?arg.
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	?ex conll:HEAD ?head.
+	?head conll:ID ?id.
+	?ex conll:ID ?exid.
+	FILTER(?head!=?arg)
+	BIND(concat(?id,":",replace(str(?prop),".*[#/-]",""),"<",?exid,"/expl") as ?msg)
+};
+
+###########
+# pruning #
+###########
+
+# if multiple properties apply, remove CXN
+DELETE {
+	?w conll:ARGM-CXN ?h.
+	?h conll:MISC ?msg.
+} WHERE {
+	?w conll:ARGM-CXN ?h.
+	?w ?prop ?h.
+	FILTER(?prop!=conll:ARGM-CXN)
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	OPTIONAL { ?h conll:MISC ?msg FILTER(contains(?msg,"CXN<")) }
+};
+
+# if an indirect relationship exists, remove CXN
+DELETE {
+	?w conll:ARGM-CXN ?h.
+	?h conll:MISC ?msg.
+} WHERE {
+	?w conll:ARGM-CXN ?h.
+	{ ?pred conll:ARGM-ARG0 ?w; conll:ARGM-ARG1 ?h } UNION
+	{ ?pred conll:ARGM-ARG1 ?w; conll:ARGM-ARG0 ?h }
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	OPTIONAL { ?h conll:MISC ?msg FILTER(contains(?msg,"CXN<")) }
+};
+
+
+# if ADJ(<mod) is adverbial, use ADV, instead
+DELETE {
+	?w conll:ARGM-ADJ ?h.
+} INSERT {
+	?w conll:ARGM-ADV ?h.
+	?h conll:MISC "ADV<ADJ+RB".
+} WHERE {
+	?w conll:ARGM-ADJ ?h.
+	?h (conll:XPOS|conll:UPOS) ?pos.
+	FILTER(?pos in ("ADV","RB","RBR","RBS","WRB"))
+};
+
+# if multiple properties apply, remove ADV
+DELETE {
+	?w conll:ARGM-ADV ?h.
+	?h conll:MISC ?msg.
+} WHERE {
+	?w conll:ARGM-ADV ?h.
+	?w ?prop ?h.
+	FILTER(?prop!=conll:ARGM-ADV)
+	?prop rdfs:subPropertyOf+ srl:ROLE.
+	OPTIONAL { ?h conll:MISC ?msg FILTER(contains(?msg,"CXN<")) }
+};
+
+
+# remove finite verbs as ARGM-TMP
+DELETE {
+	?w conll:ARGM-TMP ?verb.
+} INSERT {
+	?verb conll:MISC "drop:TMP"
+} WHERE {
+	?w conll:ARGM-TMP ?verb.
+	?verb (conll:XPOS|conll:UPOS) ?pos.
+	FILTER(strstarts(?pos,"V") || ?pos in ("MD", "AUX"))
+};
+
+# remove (prepositional) predicates if their arguments are connected by a semantic role
+DELETE {
+	?pred conll:ARGM-ARG0 ?arg0; conll:ARGM-ARG1 ?arg1
+} WHERE {
+	?pred conll:ARGM-ARG0 ?arg0; conll:ARGM-ARG1 ?arg1.
+	?pred (conll:UPOS|conll:XPOS|conll:EDGE|conll:POS) ?pos.
+	FILTER(?pos in ("IN","TO","ADP","case")) # prepositions
+	{ ?rel rdfs:subPropertyOf+ srl:ROLE. 
+	  # FILTER(! ?rel in (conll:ARGM-CXN,conll:ARGM-ADV,conll:ARGM-ADJ))
+	  ?arg0 ?rel ?arg1. 
+	} UNION 
+	{ ?rel rdfs:subPropertyOf+ srl:ROLE. 
+	  # FILTER(! ?rel in (conll:ARGM-CXN,conll:ARGM-ADV,conll:ARGM-ADJ))
+	  ?arg1 ?rel ?arg0. }  
+	#BIND(str(?rel) as ?msg)
+	
+};
+
+# drop non-essential properties
+DELETE { ?w conll:_ ?c } WHERE { ?w conll:_ ?c };
+DELETE { ?w conll:PMB_WORD ?c } WHERE { ?w conll:PMB_WORD ?c };
+DELETE { ?a tmp:Sub ?c. } WHERE { ?w tmp:Sub ?c };

@@ -1,0 +1,299 @@
+PREFIX powla: <http://purl.org/powla/powla.owl#>
+PREFIX conll: <http://ufal.mff.cuni.cz/conll2009-st/task-description.html#>
+PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX terms: <http://purl.org/acoli/open-ie/>
+PREFIX srl: <http://purl.org/acoli/open-ie/srl/>
+PREFIX tmp: <http://purl.org/acoli/open-ie/tmp/>
+PREFIX x:     <http://purl.org/acoli/conll-rdf/xml#>
+PREFIX nif:   <http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+
+# reads in PMB-CoNLL (with one row per statement)
+# and produces a denser CoNLL format (with one row per token)
+
+# 0. remove variables and conditions from nif:Words
+DELETE {
+	?x a nif:Word; nif:nextWord ?next; conll:HEAD ?head.
+	?x conll:COND ?cond.
+} INSERT {
+	?x a ?type, ?condType.
+} WHERE {
+	?x a nif:Word.
+	 	MINUS { ?x conll:CAT [] } # CAT is used for words only (conll:WORD is unreliable because of empty tokens)
+	OPTIONAL { ?x nif:nextWord ?next }
+	OPTIONAL { ?x conll:HEAD ?head}
+	OPTIONAL { ?x conll:COND ?cond. BIND(uri(concat("http://purl.org/acoli/open-ie/",?cond)) as ?condType) }
+	BIND(if(bound(?cond),terms:Cond, terms:Var) as ?type)
+};
+
+# 1. add variables as another conll property if they overlap with beginning of end of span
+DELETE {
+	?v conll:FROM ?vFrom; conll:TO ?vTo.
+} INSERT {
+	?w terms:VAR ?v.
+} WHERE {
+	?w a nif:Word; (conll:FROM/^conll:FROM)|(conll:TO/^conll:TO) ?v. ?v a terms:Var.
+	?v conll:FROM ?vFrom; conll:TO ?vTo.
+
+};
+
+# at the moment, all annotations seem to be word-based, if this is incorrect, enable the following
+# also, if variable and token boundaries don't match anymore, perform direct positional comparison (slower)
+#DELETE {
+#	?v conll:FROM ?vFrom; conll:TO ?vTo.
+#} INSERT {
+#	?w terms:VAR ?v
+#} WHERE {
+#	?last terms:VAR ?v; nif:nextWord+ ?w.
+#	?w nif:nextWord+ ?next.
+#	?next terms:VAR ?v.
+#	?v conll:FROM ?vFrom; conll:TO ?vTo.
+#};
+
+# 2. resolve variables in conditions
+DELETE {
+	?c ?arg ?id; conll:DRS ?drs.
+} INSERT {
+	?c ?arg ?v.
+} WHERE {
+	?c a terms:Cond; conll:DRS ?drs; ?arg ?id.
+	FILTER(?arg in (conll:ARG1,conll:ARG2))
+	?v a terms:Var; conll:DRS ?drs; conll:SYMBOL ?id.
+};
+
+# 2.' resolve variables in conditions
+# fallback: DRS mismatch (as in first sentence)
+DELETE {
+	?c ?arg ?id; conll:DRS ?drs.
+} INSERT {
+	?c ?arg ?v.
+} WHERE {
+	?c a terms:Cond; conll:DRS ?drs; ?arg ?id.
+	FILTER(?arg in (conll:ARG1,conll:ARG2))
+	?v a terms:Var; conll:SYMBOL ?id.
+};
+
+
+# 3. drop variables
+DELETE {
+	?v a terms:Var; conll:DRS ?drs; conll:ID ?id; conll:SYMBOL ?symbol
+} WHERE {
+	?v a terms:Var; conll:DRS ?drs; conll:ID ?id; conll:SYMBOL ?symbol
+};
+
+# 4. resolve pred conditions
+DELETE {
+	?c a terms:pred, terms:Cond; conll:WORDNET ?wn; conll:SYMBOL ?sym; conll:FROM ?from; conll:TO ?to; conll:ARG1 ?var; conll:ID ?id.
+} INSERT {
+	?w conll:WORDNET ?wn; conll:SYMBOL ?sym.
+	?pred conll:WORDNET ?wn; conll:SYMBOL ?sym; terms:VAR ?var.
+} WHERE {
+	?c a terms:pred; conll:ARG1 ?var; conll:ID ?id.
+	?w terms:VAR ?var; a nif:Word.
+	OPTIONAL { ?c conll:FROM ?from }
+	OPTIONAL { ?c conll:TO ?to}
+	OPTIONAL { ?c conll:WORDNET ?wn }
+	OPTIONAL { ?c conll:SYMBOL ?sym }
+	{ ?pred conll:FROM ?from; a nif:Word } UNION
+	{ ?pred conll:TO ?to; a nif:Word }
+};
+
+# 5. reduce variables to the semantic head
+#    [note: should better be done over dependency parse]
+#    (seems to occur with nominals only, particle verbs form conjoint tokens)
+DELETE {
+	?mod terms:VAR ?v
+} WHERE {
+	?mod terms:VAR ?v; conll:POS ?modPos.
+	?head terms:VAR ?v; conll:POS ?hPos.
+	FILTER(
+	(?modPos in ("DT","JJ","JJR","JJS") && ?hPos in ("NN","NNS","NNP")) ||
+	(?modPos in ("DT") && ?hPos in ("JJ","JJR","JJS","NN","NNS","NNP"))
+	)
+};
+
+# otherwise, take the last
+DELETE {
+	?mod terms:VAR ?v
+} WHERE {
+	?mod terms:VAR ?v; nif:nextWord+ ?head.
+	?head terms:VAR ?v.
+};
+
+# 6. replace all variables with token matches
+DELETE {
+	?c ?arg ?v
+} INSERT {
+	?c ?arg ?w
+} WHERE {
+	?c a terms:Cond; (conll:ARG1|conll:ARG2) ?v; ?arg ?v.
+	FILTER(?arg in (conll:ARG1,conll:ARG2))
+	?w a nif:Word; terms:VAR ?v.
+};
+
+# 7. remove variables
+DELETE {
+	?w terms:VAR ?var
+} WHERE {
+	?w terms:VAR ?var
+};
+
+# 8. conditions: mark cue (local span)
+DELETE {
+	?c conll:FROM ?from; conll:TO ?to; conll:ID ?id
+} INSERT {
+	?c terms:TOK ?w.
+} WHERE {
+	?c a terms:Cond; (conll:FROM/^conll:FROM)|(conll:TO/^conll:TO) ?w; conll:FROM ?from; conll:TO ?to; conll:ID ?id.
+	?w a nif:Word.
+};
+
+# 9. conditions: remove terms:TOK if identical to ARG1 or ARG2
+DELETE {
+	?c terms:TOK ?arg.
+} WHERE {
+	?c terms:TOK ?arg; (conll:ARG1|conll:ARG2) ?arg.
+};
+
+# 10. conditions: remove symbol if identical to framenet
+DELETE {
+	?c conll:SYMBOL ?fn
+} WHERE {
+	?c a terms:Cond; conll:SYMBOL ?fn; conll:FRAMENET ?fn.
+};
+
+# 11: conditions: create FRAMENET.SYMBOL property pointing from ARG1 to ARG2
+#     exclude context (non-bound) variables
+DELETE {
+	?a ?b ?c.
+	?c ?d ?e.
+} INSERT {
+	?arg1 ?role ?arg2.
+	?role rdfs:subPropertyOf srl:ROLE.
+} WHERE {
+	?c a terms:rel; conll:ARG1 ?arg1; conll:ARG2 ?arg2; conll:FRAMENET ?frame.
+	OPTIONAL {
+		?c conll:SYMBOL ?symbol
+	}
+	BIND(if(bound(?symbol),	uri(concat("http://purl.org/acoli/open-ie/srl/",encode_for_uri(concat(?frame,".",?symbol)))),
+							uri(concat("http://purl.org/acoli/open-ie/srl/",encode_for_uri(?frame)))) as ?role)
+	?arg1 a nif:Word.
+	?arg2 a nif:Word.
+	OPTIONAL {
+		?c a terms:Cond.
+		MINUS { ?c terms:TOK [] }
+		OPTIONAL { ?a ?b ?c. }
+		?c ?d ?e.
+	}
+};
+
+# 12: conditions with prepositions: terms:TOK refers to a preposition
+#     we preserve ARG1 and ARG2
+DELETE {
+	?a ?b ?c.
+	?c ?d ?e.
+} INSERT {
+	?tok conll:FRAMENET ?role; srl:ARG1 ?arg1; srl:ARG2 ?arg2.
+	srl:ARG1 rdfs:subPropertyOf srl:ROLE.
+	srl:ARG2 rdfs:subPropertyOf srl:ROLE.
+} WHERE {
+	?c a terms:rel; conll:ARG1 ?arg1; conll:ARG2 ?arg2; conll:FRAMENET ?frame; terms:TOK ?tok
+	OPTIONAL {
+		?c conll:SYMBOL ?symbol
+	}
+	BIND(if(bound(?symbol),	concat(?frame,".",?symbol),
+							?frame) as ?role)
+	?arg1 a nif:Word.
+	?arg2 a nif:Word.	
+	OPTIONAL {
+		?c a terms:Cond.
+		OPTIONAL { ?a ?b ?c. }
+		?c ?d ?e.
+	}
+};
+
+# 13. drop named entity annotations
+DELETE {
+	?a ?b ?c.
+	?c ?d ?e.
+} WHERE {
+	?c a terms:Cond, terms:named.
+	OPTIONAL { ?a ?b ?c. }
+	?c ?d ?e.
+};
+
+# 14. drop conditions with literal ARG2 (these are non-bound, contextual variables)
+DELETE {
+	?a ?b ?c.
+	?c ?d ?e.
+} WHERE {
+	?c a terms:Cond; conll:ARG2 ?arg2. FILTER(isliteral(?arg2))
+	OPTIONAL { ?a ?b ?c. }
+	?c ?d ?e.
+};
+
+# 15. drop negation (to be recovered from syntax)
+DELETE {
+	?a ?b ?c.
+	?c ?d ?e.
+} WHERE {
+	?c a terms:not, terms:Cond.
+	OPTIONAL { ?a ?b ?c. }
+	?c ?d ?e.
+};
+
+# 16. export to CoNLL
+## 16.1 new numerical IDs
+DELETE {
+	?w conll:ID ?id
+} INSERT {
+	?w conll:CONLL_ID ?newid.
+	?w conll:PMB_ID ?id.
+} WHERE {
+	?w conll:ID ?id.
+	{ SELECT ?w (COUNT(distinct ?pre) as ?position) 
+		WHERE {
+			?w a nif:Word.
+			?pre nif:nextWord* ?w.
+		} GROUP BY ?w
+	}
+	BIND(str(?position) as ?newid)
+};
+
+# 16.2 concat all SRL annotations into DEPS, using the new IDs
+#      skip those that point to the same token
+INSERT {
+	?w conll:DEPS ?deps
+} WHERE {
+	{ SELECT ?w (GROUP_CONCAT(distinct ?dep; separator="|") as ?deps) 
+		WHERE {
+			?prop rdfs:subPropertyOf+ srl:ROLE.
+			?pred ?prop ?w; conll:CONLL_ID ?head.
+			FILTER(?pred!=?w)
+			BIND(concat(?head,":",replace(str(?prop), ".*/","")) as ?dep)
+		} GROUP BY ?w
+	}
+};
+
+# 16.3 drop comments
+DELETE {
+	?w rdfs:comment ?comment
+} WHERE {
+	?w rdfs:comment ?comment
+};
+
+# 16.4 merge all CoNLL properties with multiple fillers
+DELETE {
+	?w ?prop ?val
+} INSERT {
+	?w ?prop ?agg
+} WHERE {
+	?w a nif:Word; ?prop ?val.
+	FILTER(strstarts(str(?prop),"http://ufal.mff.cuni.cz/conll2009-st/task-description.html#"))
+	{ SELECT ?w ?prop (GROUP_CONCAT(distinct ?v; separator="|") as ?agg)
+		WHERE {
+			?w a nif:Word; ?prop ?v.
+			FILTER(strstarts(str(?prop),"http://ufal.mff.cuni.cz/conll2009-st/task-description.html#"))
+		} GROUP BY ?w ?prop
+	}
+};

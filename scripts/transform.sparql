@@ -1,0 +1,600 @@
+PREFIX :      <file:///C:/Users/chiarcos/Desktop/corpus/revised-srl/ewt-conll/#>
+PREFIX powla: <http://purl.org/powla/powla.owl#>
+PREFIX conll: <http://ufal.mff.cuni.cz/conll2009-st/task-description.html#>
+PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX terms: <http://purl.org/acoli/open-ie/>
+PREFIX x:     <http://purl.org/acoli/conll-rdf/xml#>
+PREFIX nif:   <http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX srl:   <http://purl.org/acoli/open-ie/srl/>
+PREFIX tmp:   <http://purl.org/acoli/open-ie/tmp/>
+
+#####################
+# Apache extensions #
+#####################
+# to parse UD v.2 DEPS column
+
+PREFIX apf: <http://jena.apache.org/ARQ/property#>
+
+# transform DEPS, Apache-specific
+# for all enhanced props, also provide the generalization
+# see syntactic preprocessing below for analoguous treatment of HEAD+EDGE
+# for tmp:HEAD, see there
+INSERT {
+	?w ?prop ?h.
+	?prop rdfs:subPropertyOf tmp:HEAD.
+	?w ?simpleprop ?h.
+	?simpleprop rdfs:subPropertyOf tmp:HEAD.
+} WHERE {
+	?w conll:DEPS ?deps.
+	?dep apf:strSplit( ?deps "\\|" )
+	BIND(strbefore(?dep,":") as ?hid)
+	BIND(strafter(?dep,":") as ?e)
+
+	# we ignore non-resolvables, i.e., 0
+	?h conll:ID ?hid.
+	BIND(uri(concat("http://purl.org/acoli/open-ie/tmp/",encode_for_uri(?e))) as ?prop)
+	BIND(uri(concat("http://purl.org/acoli/open-ie/tmp/",replace(?e,':.*',''))) as ?simpleprop)
+};
+
+# some questions about conll:DEPS in EWT/Streusle data
+# undefined dependency: ref
+# undefined enhanced dependency: nsubj:xsubj
+
+###########################
+# syntactic preprocessing #
+###########################
+# use tmp:HEAD instead of conll:HEAD
+# and expand tree structure to represent, e.g., shared arguments
+
+INSERT {
+	?a tmp:HEAD ?b
+} WHERE {
+	?a conll:HEAD ?b.
+	?b a nif:Word
+};
+
+# deps as subproperties of tmp:HEAD
+INSERT {
+	?a ?rel ?b.
+	?rel rdfs:subPropertyOf tmp:HEAD.
+	?a ?short_rel ?b.
+	?short_rel rdfs:subPropertyOf tmp:HEAD.
+} WHERE {
+	?a tmp:HEAD ?b.
+	?a conll:EDGE ?e.
+	BIND(uri(concat("http://purl.org/acoli/open-ie/tmp/",encode_for_uri(?e))) as ?rel)
+	BIND(uri(concat("http://purl.org/acoli/open-ie/tmp/",replace(?e,":.*",""))) as ?short_rel)
+};
+
+# head of conjunct is the head of the first conjunct, e.g., for conjunction of adjectives
+INSERT {
+	?conj ?rel ?head
+} WHERE {
+	?conj tmp:conj+ ?conj1.
+	?conj1 tmp:HEAD ?head.
+	?conj1 ?rel ?head.
+	?rel rdfs:subPropertyOf* tmp:HEAD.
+	MINUS { ?conj1 tmp:conj ?head }
+};
+
+# shared subject arguments of
+# - xcomp,
+# - ccomp marked with to [should be xcomp],
+# - verbal conj (if the second conjunct does not have a subject)
+# this rule will be iterated
+INSERT {
+	?subj ?rel ?xcomp.
+} WHERE {
+	# for all subject dependents
+	?subj tmp:nsubj|tmp:csubj|tmp:nsubjpass|tmp:csubjpass ?head.
+
+	# and their dependencies
+	?subj ?rel ?head.
+	?rel rdfs:subPropertyOf* tmp:HEAD.
+
+	# copy them to xcomp/ccomp/conj dependents of the predicates,
+	?xcomp (tmp:conj|tmp:ccomp|tmp:xcomp)+ ?head.
+
+	# if none of the dependents along the path contain another subject
+	MINUS {
+		?xcomp (tmp:conj|tmp:ccomp|tmp:xcomp)* ?tmp.
+		?tmp (tmp:conj|tmp:ccomp|tmp:xcomp)+ ?head.
+		?xsubj tmp:nsubj|tmp:csubj|tmp:nsubjpass|tmp:csubjpass ?tmp.
+	}
+
+	# and dependent is either
+	{	# (a) an xcomp
+		?xcomp tmp:xcomp []
+	} UNION {
+		# (b) a ccomp with "to", or
+		?xcomp tmp:ccomp []; ^tmp:mark/(conll:LEMMA|conll:WORD) "to"
+	} UNION {
+		# (c) a verbal conj
+		?xcomp tmp:conj []; conll:UPOS "VERB"
+	}
+};
+
+##################
+# head reduction #
+##################
+# using conll:HEAD, not tmp:HEAD!
+
+DELETE {
+	?b ?rel ?a
+} WHERE {
+	?a conll:HEAD ?h.
+	?b ?rel ?a,?h.
+	?b a nif:Word.
+};
+
+# remove punctuation from SRL spans
+DELETE {
+	?head ?role ?punct
+} WHERE {
+	{ ?punct conll:EDGE "punct" } UNION
+	{ ?punct conll:UPOS "PUNCT" } UNION
+	{ ?punct conll:LEMMA|conll:WORD ?lemma
+		FILTER(?lemma in ("!", "'", "''", "(", ")", ",", "-", "--", "-lcb-", "-rcb-", ".", "...", "/", ":", ";", "`", "``")) }
+	?head ?role ?punct.
+	?head ?role ?non_punct.
+	?non_punct a nif:Word.
+	FILTER(?punct != ?non_punct)
+	MINUS {
+		{ ?non_punct conll:EDGE "punct" } UNION
+		{ ?non_punct conll:UPOS "PUNCT" } UNION
+		{ ?non_punct conll:LEMMA|conll:WORD ?plemma
+			FILTER(?plemma in ("!", "'", "''", "(", ")", ",", "-", "--", "-lcb-", "-rcb-", ".", "...", "/", ":", ";", "`", "``")) }
+	}
+	MINUS {
+		[] conll:HEAD ?punct
+	}
+};
+
+#################
+# label mapping #
+#################
+
+# (0) normalize roles (drop C-, R- prefixes, A0 => ARG0, AM => ARGM)
+# (a) ARGM-XYZ[-ABC] => XYZ
+# (b) ARGnr => mapping
+# (b.1) match predicate + pos
+# (b.2) match lemma + pos
+# (b.3) match predicate (no pos)
+# (b.4) match lemma (no pos)
+# the fallback strategies could be necessary for older PB releases; for current English PB, b.1 should just work
+
+# prep: drop prefixes (R-, C-)
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?newrel ?arg.
+	?arg conll:MISC ?msg.
+} WHERE {
+	?head a nif:Word; ?rel ?arg.
+	FILTER(strstarts(str(?rel), 'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#'))
+	FILTER(strstarts(str(?rel), 'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#C-') ||
+		     strstarts(str(?rel), 'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#R-'))
+	BIND(replace(str(?rel),
+	  			"(http://ufal.mff.cuni.cz/conll2009-st/task-description.html#)[RC\\-]*",
+	     		"$1") as ?role)
+	BIND(uri(?role) as ?newrel)
+
+	BIND(replace(str(?rel),
+					"http://ufal.mff.cuni.cz/conll2009-st/task-description.html#([RC\\-]*-(.*))$",
+					"$2<$1") as ?msg)
+};
+
+# prep: normalize labels to long (ARG0, ARGM) notation
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?newrel ?arg
+} WHERE {
+	?head a nif:Word; ?rel ?arg.
+	FILTER(!strstarts(str(?rel), 'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#ARG'))
+	FILTER(strstarts(str(?rel), 'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#A'))
+	BIND(replace(str(?rel),
+	  			"(http://ufal.mff.cuni.cz/conll2009-st/task-description.html#A)",
+	     		"$1RG") as ?role)
+	BIND(uri(?role) as ?newrel)
+};
+
+# add PB_POS
+# note that we don't require these to be unambiguous
+INSERT {
+	?a conll:PB_POS ?pb
+} WHERE {
+	{ ?a conll:UPOS ?upos.
+	  VALUES(?upos ?pbpos) {
+		("NOUN" "n")
+		("VERB" "v")
+		("ADJ" "j")
+		("ADV" "j")
+	  }
+	} UNION {
+	  ?a conll:XPOS ?xpos.
+	  BIND(lcase(substr(?xpos,1,1)) as ?pbpos)
+	}
+	BIND(uri(concat("http://purl.org/acoli/open-ie/srl/",?pbpos)) as ?pb)
+};
+
+# replace modifiers by their label
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?newrel ?arg
+} WHERE {
+	?head a nif:Word; ?rel ?arg.
+	FILTER(strstarts(str(?rel), 'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#ARGM-'))
+	BIND(replace(replace(str(?rel),".*ARGM-",""),"-.*","") as ?role)
+	BIND(uri(concat("http://purl.org/acoli/open-ie/srl/",?role)) as ?newrel)
+};
+
+# replace numbered argument by SRL pred plus pos
+# theoretically, more than one response would be possible, as we can have different PB_POSes, so, we use SAMPLE to return one (randomly determined, but this shouldn't occur)
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?nrel ?arg; rdfs:comment ?msg
+} WHERE {
+	{
+		SELECT ?head ?rel ?arg (SAMPLE(?newrole) AS ?nrole) (SAMPLE(?newrel) AS ?nrel)
+		WHERE {
+			?head conll:PRED ?pred.
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',encode_for_uri(replace(str(?pred),"\\s+","_")))) as ?srcpred)
+			?head conll:PB_POS ?srcpos.
+
+			?head ?rel ?arg.
+			?arg a nif:Word.
+			FILTER(strstarts(str(?rel),'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#'))
+			BIND(replace(str(?rel),'.*[#/]','') as ?argrole)
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?argrole)) as ?srcrole)
+
+			GRAPH <http://mapping.graph> {
+				[ ?srcpred [ ?srcpos [ ?srcrole ?newrole ]]]
+				BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?newrole)) as ?newrel)
+			}
+		} GROUP BY ?head ?rel ?arg
+	}
+	# BIND(concat("inferred ",?nrole," from pred + pos") as ?msg)
+};
+
+# replace numbered argument by SRL label plus pos
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?nrel ?arg; rdfs:comment ?msg
+} WHERE {
+	{
+		SELECT ?head ?rel ?arg (SAMPLE(?newrole) AS ?nrole) (SAMPLE(?newrel) AS ?nrel)
+		WHERE {
+			?head conll:LEMMA ?lemma.
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',encode_for_uri(replace(str(?lemma),"\\s+","_")))) as ?srclemma)
+			?head conll:PB_POS ?srcpos.
+			?head ?rel ?arg.
+			?arg a nif:Word.
+			FILTER(strstarts(str(?rel),'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#'))
+			BIND(replace(str(?rel),'.*[#/]','') as ?argrole)
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?argrole)) as ?srcrole)
+
+			GRAPH <http://mapping.graph> {
+				[ ?srclemma [ ?srcpred [ ?srcpos [ ?srcrole ?newrole ]]]]
+			}
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?newrole)) as ?newrel)
+		} GROUP BY ?head ?rel ?arg
+	}
+	# BIND(concat("inferred ",?nrole," from lemma + pos") as ?msg)
+};
+
+# replace numbered argument by SRL pred minus pos
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?nrel ?arg; rdfs:comment ?msg
+} WHERE {
+	{
+		SELECT ?head ?rel ?arg (SAMPLE(?newrole) AS ?nrole) (SAMPLE(?newrel) AS ?nrel)
+		WHERE {
+			?head conll:PRED ?pred.
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',encode_for_uri(replace(str(?pred),"\\s+","_")))) as ?srcpred)
+
+			?head ?rel ?arg.
+			?arg a nif:Word.
+			FILTER(strstarts(str(?rel),'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#'))
+			BIND(replace(str(?rel),'.*[#/]','') as ?argrole)
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?argrole)) as ?srcrole)
+
+			GRAPH <http://mapping.graph> {
+				[ ?srcpred [ ?srcpos [ ?srcrole ?newrole ]]]
+				BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?newrole)) as ?newrel)
+			}
+		} GROUP BY ?head ?rel ?arg
+	}
+	# BIND(concat("inferred ",?nrole," from pred (no pos)") as ?msg)
+};
+
+# replace numbered argument by SRL label minus pos
+DELETE {
+	?head ?rel ?arg
+} INSERT {
+	?head ?nrel ?arg; rdfs:comment ?msg
+} WHERE {
+	{
+		SELECT ?head ?rel ?arg (SAMPLE(?newrole) AS ?nrole) (SAMPLE(?newrel) AS ?nrel)
+		WHERE {
+			?head conll:LEMMA ?lemma.
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',encode_for_uri(replace(str(?lemma),"\\s+","_")))) as ?srclemma)
+			?head ?rel ?arg.
+			?arg a nif:Word.
+			FILTER(strstarts(str(?rel),'http://ufal.mff.cuni.cz/conll2009-st/task-description.html#'))
+			BIND(replace(str(?rel),'.*[#/]','') as ?argrole)
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?argrole)) as ?srcrole)
+
+			GRAPH <http://mapping.graph> {
+				[ ?srclemma [ ?srcpred [ ?srcpos [ ?srcrole ?newrole ]]]]
+			}
+			BIND(uri(concat('http://purl.org/acoli/open-ie/srl/',?newrole)) as ?newrel)
+		} GROUP BY ?head ?rel ?arg
+	}
+	# BIND(concat("inferred ",?nrole," from lemma (no pos)") as ?msg)
+};
+
+# remove PB_POS
+DELETE {
+	?w conll:PB_POS ?pbpos
+} WHERE {
+	?w conll:PB_POS ?pbpos
+};
+
+####################
+# infer macroroles #
+####################
+
+# dep => SRL
+# enhanced deps
+# tbc whether the : makes problems
+INSERT {
+	?head ?role ?dep; rdfs:comment ?comment.
+} WHERE {
+	?dep tmp:HEAD ?head.
+	?dep ?rel ?head.
+	?rel rdfs:subPropertyOf tmp:HEAD.
+	VALUES(?rel ?role) {
+		(tmp:nsubj:pass srl:ARG1)
+		(tmp:csubj:pass srl:ARG1)
+		(tmp:iobj:patient srl:ARG1)
+		(tmp:obl:patient srl:ARG1)
+		(tmp:nmod:patient srl:ARG1)
+		(tmp:obl:agent srl:ARG0)
+		(tmp:iobj:agent srl:ARG0)
+		(tmp:nmod:agent srl:ARG0)
+		(tmp:obj:agent srl:ARG0)
+	}
+	BIND(concat(str(?role)," from enhanced dep") as ?comment)
+};
+
+# dep => SRL
+# enhanced deps
+# fallback if the : makes problems
+INSERT {
+	?head ?role ?dep; rdfs:comment ?comment.
+} WHERE {
+	?dep tmp:HEAD ?head.
+	?dep conll:EDGE ?rel.
+	MINUS {
+		?head srl:ARG0|srl:ARG1|srl:ARG2 ?dep.
+	}
+	VALUES(?rel ?role) {
+		("nsubj:pass" srl:ARG1)
+		("csubj:pass" srl:ARG1)
+		("iobj:patient" srl:ARG1)
+		("obl:patient" srl:ARG1)
+		("nmod:patient" srl:ARG1)
+		("obl:agent" srl:ARG0)
+		("iobj:agent" srl:ARG0)
+		("nmod:agent" srl:ARG0)
+		("obj:agent" srl:ARG0)
+	}
+	BIND(concat(str(?role)," from enhanced dep") as ?comment)
+};
+
+# dep => SRL
+# plain deps; these only apply if no conflict with an enhanced dep
+INSERT {
+	?head ?role ?dep
+} WHERE {
+	?dep tmp:HEAD ?head.
+	?dep ?rel ?head.
+	?rel rdfs:subPropertyOf tmp:HEAD.
+	MINUS {
+		?head srl:ARG0|srl:ARG1|srl:ARG2 ?dep.
+	}
+	VALUES(?rel ?role) {
+		(tmp:nsubjpass srl:ARG1)
+		(tmp:csubjpass srl:ARG1)
+		(tmp:obj srl:ARG1)
+		(tmp:dobj srl:ARG1)
+		(tmp:ccomp srl:ARG1)
+		(tmp:nsubj srl:ARG0)
+		(tmp:csubj srl:ARG0)
+
+		(tmp:iobj srl:ARG2)
+	}
+};
+
+# if ARG0 is not defined yet, approx. obl:agent from English by-phrases
+INSERT {
+	?head srl:ARG0 ?dep
+} WHERE {
+	[ (conll:LEMMA|conll:WORD) "by"; conll:EDGE "case" ] tmp:HEAD ?dep.
+	?dep tmp:obl|tmp:nmod ?head.
+	MINUS { ?head (srl:ARG0|srl:ARG1|srl:ARG2) ?dep }
+	MINUS { ?head srl:ARG0 [] }
+
+	{	# if head is marked as a clause (UD v.2 only),
+		?dep tmp:obl ?head.
+	} UNION {
+		# if (UD v.1) head is a morphological verb,
+		?head conll:UPOS "VERB"
+	} UNION {
+		# or if head carries a copula or aux
+		?cop tmp:cop|tmp:aux|tmp:auxpass ?head
+	}
+};
+
+# for VERB in a relative clause, follow the procedure above
+# if a relative pronoun is linked with a core role, detach it and link the syntactic pivot, instead
+DELETE {
+	?head ?role ?relpron
+} INSERT {
+	?head ?role ?pivot
+} WHERE {
+	?relpron conll:FEATS ?feats.
+	FILTER(contains(?feats,"PronType=Rel"))
+	?relpron tmp:HEAD ?head.
+	?head ?role ?relpron.
+	FILTER(?role in (srl:ARG0,srl:ARG1,srl:ARG2))
+	?head tmp:HEAD ?pivot.
+	?pivot a nif:Word.
+	MINUS {
+		?head tmp:conj ?pivot
+	}
+};
+
+# every deverbal ADJ and participle is a predicate
+INSERT {
+	?dep srl:ARG0 ?head
+} WHERE {
+	?dep tmp:amod ?head.
+	{ 	?dep conll:FEATS ?feats.
+		FILTER(contains(?feats,"VerbForm=Ger"))
+	} UNION {
+		?dep conll:UPOS "VERB"; (conll:LEMMA|conll:WORD) ?form.
+		FILTER(strends(lcase(?form),"ing"))
+	} UNION {
+		?dep conll:UPOS "ADJ"; (conll:LEMMA|conll:WORD) ?form.
+		FILTER(strends(lcase(?form),"ing"))
+	}
+};
+
+INSERT {
+	?dep srl:ARG1 ?head
+} WHERE {
+	?dep tmp:amod ?head.
+	MINUS { ?head (srl:ARG0|srl:ARG1|srl:ARG2) ?dep }
+	{ 	?dep conll:FEATS ?feats.
+		FILTER(contains(?feats,"VerbForm=Part"))
+	} UNION {
+		?dep conll:UPOS "VERB"; (conll:LEMMA|conll:WORD) ?form.
+		FILTER(strends(lcase(?form),"ed"))
+	} UNION {
+		?dep conll:UPOS "ADJ"; (conll:LEMMA|conll:WORD) ?form.
+		FILTER(strends(lcase(?form),"ed"))
+	}
+};
+
+# every other ADJ: set ARG0 to the syntactic head
+INSERT {
+	?dep srl:ARG0 ?head
+} WHERE {
+	?dep tmp:amod ?head.
+	MINUS { ?dep srl:ARG0|srl:ARG1|srl:ARG2 ?head }
+};
+
+###########################
+# identificational copula #
+###########################
+# we do not *annotate* copula with macro-roles, but we *transfer* macrorole assignment
+# from the element annotated as copular predicate if the "predicate" is non-predicative, i.e., either nominal or pronominal
+
+DELETE {
+	?pred ?mr ?arg
+} INSERT {
+	?be ?mr ?arg; srl:ARG1 ?pred
+} WHERE {
+	?be tmp:cop ?pred.
+	?pred conll:UPOS ?upos.
+	FILTER(?upos in ("NOUN","PRON","PROPN","ADV"))
+	?pred ?mr ?arg.
+	FILTER(?mr in (srl:ARG0,srl:ARG1,srl:ARG2))
+};
+
+#######################
+# infer NEG, MOD, ADV #
+#######################
+
+# infer (ARGM-)NEG
+INSERT {
+	?head srl:NEG ?neg.
+	?neg conll:MISC "NEG<syntax"
+} WHERE {
+	?head ?rel [].
+	FILTER(strstarts(str(?rel),'http://purl.org/acoli/open-ie/srl/'))
+
+	?neg conll:HEAD ?head.
+
+	# LEMMA
+	{ ?neg conll:LEMMA|conll:WORD ?lemma
+		FILTER(?lemma in ("not", "never","n't","no"))
+
+	# UD v.1 only
+	} UNION {
+		?neg conll:EDGE "neg"
+	}
+};
+
+# infer (ARGM-)MOD
+INSERT {
+	?head srl:MOD ?mod.
+	?mod conll:MISC "MOD<syntax"
+} WHERE {
+	?head ?rel [].
+	FILTER(strstarts(str(?rel),'http://purl.org/acoli/open-ie/srl/'))
+
+	?mod conll:HEAD ?head.
+
+	# LEMMA
+	{ ?mod conll:LEMMA|conll:WORD ?lemma
+		FILTER(?lemma in ("can", "could", "may", "might", "must", "need", "ought", "shall", "should", "will", "would"))
+
+	# XPOS, PTB only
+	} UNION {
+		?mod conll:XPOS "MD"
+	}
+};
+
+# infer (ARGM-)ADV
+INSERT {
+	?head srl:ADV ?adv.
+	?adv conll:MISC "ADV<syntax"
+} WHERE {
+	?head ?rel [].
+	FILTER(strstarts(str(?rel),'http://purl.org/acoli/open-ie/srl/'))
+
+	?adv conll:HEAD ?head.
+	MINUS {
+		?head ?rel1 ?adv.
+		FILTER(strstarts(str(?rel1),'http://purl.org/acoli/open-ie/srl/'))
+	}
+
+	MINUS {
+		?adv ?rel2 ?head.
+		FILTER(strstarts(str(?rel2),'http://purl.org/acoli/open-ie/srl/'))
+	}
+
+
+	# XPOS
+	{ ?adv conll:XPOS ?xpos
+		FILTER(?xpos in ("WRB","RB","RBR","RBS"))
+	} UNION {
+
+	# UPOS
+		?adv conll:UPOS "ADV"
+	} UNION {
+
+	# DEP
+		?adv conll:EDGE ?e
+		FILTER(strstarts(?e,"advmod"))
+	}
+};

@@ -1,0 +1,7 @@
+xmltodict
+rdflib
+SPARQLWrapper
+rdflib_jsonld
+nltk
+penman
+word2number

@@ -1,0 +1,135 @@
+PREFIX :      <file:///C:/Users/chiarcos/Desktop/corpus/revised-srl/ewt-conll/#>
+PREFIX powla: <http://purl.org/powla/powla.owl#>
+PREFIX conll: <http://ufal.mff.cuni.cz/conll2009-st/task-description.html#>
+PREFIX rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX terms: <http://purl.org/acoli/open-ie/>
+PREFIX x:     <http://purl.org/acoli/conll-rdf/xml#>
+PREFIX nif:   <http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#>
+PREFIX rdfs:  <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX srl:   <http://purl.org/acoli/open-ie/srl/>
+PREFIX tmp:   <http://purl.org/acoli/open-ie/tmp/>
+
+# some postprocessing steps
+
+##################
+# aggregate MISC #
+##################
+# if multiple MISC labels exist, concatenate them, separate with "|"
+DELETE {
+	?w conll:MISC ?oldmisc.
+} INSERT {
+	?w conll:MISC ?newmisc
+} WHERE {
+	?w conll:MISC ?oldmisc, ?m1.
+	FILTER(?oldmisc!=?m1)
+	{ SELECT ?w (GROUP_CONCAT(distinct ?misc; separator="|") as ?newmisc)
+	 	WHERE {
+			?w conll:MISC ?misc, ?m2.
+			FILTER(?misc!=?m2)
+		} GROUP BY ?w
+	}
+};
+
+####################
+# aggregate labels #
+####################
+
+# concat macrorole and PB label, where applicable
+DELETE {
+	?pred ?mr ?arg.
+	?pred ?role ?arg.
+} INSERT {
+	?pred ?nrole ?arg.
+} WHERE {
+	?pred srl:ARG0|srl:ARG1|srl:ARG2 ?arg.
+	?pred ?mr ?arg.
+	FILTER(?mr in (srl:ARG0,srl:ARG1,srl:ARG2))
+	?pred ?role ?arg.
+	FILTER(strstarts(str(?role),"http://purl.org/acoli/open-ie/srl/"))
+	FILTER(!strstarts(str(?role),"http://purl.org/acoli/open-ie/srl/ARG"))
+	BIND(uri(concat(str(?mr),'-',replace(str(?role),".*[#/]",""))) as ?nrole)
+};
+
+###########
+# pruning #
+###########
+
+# tmp:HEAD
+DELETE {
+	?a ?rel ?b
+} WHERE {
+	?rel rdfs:subProperty* tmp:HEAD.
+	?a ?rel ?b.
+};
+
+# ########################################
+# # DEBUG: keep only words with SRL anno #
+# ########################################
+
+# DELETE {
+	# ?a ?b ?c.
+# } WHERE {
+	# ?a ?b ?c.
+	# MINUS { ?a ?b ?c . FILTER(contains(str(?b),'/srl/')) }
+# };
+
+##################
+# CoNLL-U Export #
+##################
+
+# assume CoNLL-U format and word IDs to be intact
+# create PRED and provide ARGs as DEPS
+
+# update PRED to confirmed (!) frames
+DELETE {
+	?w conll:PRED ?pred
+} WHERE {
+	?w conll:PRED ?pred
+};
+
+INSERT {
+	?w conll:PRED ?lemma
+} WHERE {
+	?w conll:LEMMA ?lemma.
+	?w ?rel ?arg.
+	FILTER(strstarts(str(?rel),'http://purl.org/acoli/open-ie/srl/'))
+};
+
+# pruning: remove PB SRL annotations for PB cop frames without macroroles (e.g., cop)
+# however, if these are Streusle annotations, keep them
+DELETE {
+	?pred ?role ?dep; conll:PRED ?lemma
+} WHERE {
+	?pred conll:EDGE "cop"; conll:PRED ?lemma; ?role ?dep.
+	FILTER(strstarts(str(?role),'http://purl.org/acoli/open-ie/srl/'))
+	?dep a nif:Word.
+	MINUS { ?pred srl:ARG0|srl:ARG1|srl:ARG2 [] } # if no macroroles
+
+};
+
+# remove older DEPS
+DELETE {
+	?w conll:DEPS ?deps
+} WHERE {
+	?w conll:DEPS ?deps
+};
+
+# export as DEPS
+INSERT {
+	?w conll:DEPS ?deps.
+} WHERE {
+	{ SELECT ?w (GROUP_CONCAT(distinct concat(?pid,":",?arg); separator="|") as ?deps)
+	  WHERE {
+		?p conll:PRED []; conll:ID ?pid; ?role ?w.
+		FILTER(strstarts(str(?role),"http://purl.org/acoli/open-ie/srl/"))
+		BIND(replace(str(?role),'.*/','') AS ?arg)
+	  } GROUP BY ?w
+	}
+};
+
+# strip comments
+DELETE {
+	?s rdfs:comment ?comment
+} WHERE {
+	?s rdfs:comment ?comment
+};
